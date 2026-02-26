@@ -1,0 +1,14 @@
+{
+  "name": "milltech-visual-monitor",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "monitor": "node scripts/monitor.js"
+  },
+  "dependencies": {
+    "form-data": "^4.0.0",
+    "pixelmatch": "^5.3.0",
+    "pngjs": "^7.0.0",
+    "playwright": "^1.47.0"
+  }
+}
