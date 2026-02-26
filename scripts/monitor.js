@@ -207,10 +207,13 @@ async function sendMailgunEmail({ subject, text, attachments }) {
   const auth = Buffer.from(`api:${apiKey}`).toString("base64");
   const res = await fetch(`${baseUrl}/v3/${domain}/messages`, {
     method: "POST",
-    headers: { Authorization: `Basic ${auth}` },
+    headers: {
+      Authorization: `Basic ${auth}`,
+      ...form.getHeaders()
+    },
     body: form
   });
-
+  
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`Mailgun send failed: ${res.status} ${res.statusText}\n${body}`);
