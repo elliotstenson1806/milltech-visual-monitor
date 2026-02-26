@@ -1,0 +1,36 @@
+{
+  "urls": [
+    "https://www.milltechgroup.co.uk/",
+    "https://www.milltechgroup.co.uk/hydraulics/",
+    "https://www.milltechgroup.co.uk/product-assembly/",
+    "https://www.milltechgroup.co.uk/valve-manufacturing/",
+    "https://www.milltechgroup.co.uk/subsea/",
+    "https://www.milltechgroup.co.uk/sustainability/",
+    "https://www.milltechgroup.co.uk/aerospace/",
+    "https://www.milltechgroup.co.uk/manufacturing-control/",
+    "https://www.milltechgroup.co.uk/mission-vision-values/",
+    "https://www.milltechgroup.co.uk/quality/",
+    "https://www.milltechgroup.co.uk/cnc-milling/",
+    "https://www.milltechgroup.co.uk/contact-list/",
+    "https://www.milltechgroup.co.uk/cnc-turning/",
+    "https://www.milltechgroup.co.uk/renewables/",
+    "https://www.milltechgroup.co.uk/optical/",
+    "https://www.milltechgroup.co.uk/oil-gas/",
+    "https://www.milltechgroup.co.uk/medical/",
+    "https://www.milltechgroup.co.uk/marine/",
+    "https://www.milltechgroup.co.uk/hydrogen/",
+    "https://www.milltechgroup.co.uk/food-manufacturing-equipment/",
+    "https://www.milltechgroup.co.uk/ev-automotive/",
+    "https://www.milltechgroup.co.uk/defence/",
+    "https://www.milltechgroup.co.uk/terms-and-conditions/",
+    "https://www.milltechgroup.co.uk/contact/",
+    "https://www.milltechgroup.co.uk/privacy-policy/",
+    "https://www.milltechgroup.co.uk/about-us/",
+    "https://www.milltechgroup.co.uk/corporate-policies/"
+  ],
+  "viewport": { "width": 1440, "height": 900 },
+  "diff": {
+    "pixelmatchThreshold": 0.10,
+    "changeThresholdRatio": 0.002
+  }
+}
