@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { chromium } from "playwright";
 import pixelmatch from "pixelmatch";
 import { PNG } from "pngjs";
-import FormData from "form-data";
+import { Blob } from "node:buffer";
 
 const ROOT = process.cwd();
 const CONFIG_PATH = path.join(ROOT, "monitor.config.json");
@@ -194,26 +194,29 @@ async function sendMailgunEmail({ subject, text, attachments }) {
   const to = mustEnv("ALERT_EMAIL_TO");
   const from = process.env.MAIL_FROM || `Milltech Monitor <postmaster@${domain}>`;
 
+  // Use fetch-native multipart FormData (no form-data library, no getHeaders)
   const form = new FormData();
-  form.append("from", from);
-  form.append("to", to);
-  form.append("subject", subject);
-  form.append("text", text);
+  form.set("from", from);
+  form.set("to", to);
+  form.set("subject", subject);
+  form.set("text", text);
 
+  // Attach files as Blobs (fetch-native)
   for (const a of attachments) {
-    form.append("attachment", fs.createReadStream(a.path), { filename: a.name });
+    const buf = await fsp.readFile(a.path);
+    form.append("attachment", new Blob([buf]), a.name);
   }
 
   const auth = Buffer.from(`api:${apiKey}`).toString("base64");
   const res = await fetch(`${baseUrl}/v3/${domain}/messages`, {
     method: "POST",
     headers: {
-      Authorization: `Basic ${auth}`,
-      ...form.getHeaders()
+      Authorization: `Basic ${auth}`
+      // DO NOT set Content-Type manually; fetch will add the correct multipart boundary.
     },
     body: form
   });
-  
+
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`Mailgun send failed: ${res.status} ${res.statusText}\n${body}`);
