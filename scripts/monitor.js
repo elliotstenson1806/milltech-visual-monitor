@@ -251,6 +251,7 @@ async function main() {
   const page = await context.newPage();
 
   const changes = [];
+  let seededBaselines = 0;
 
   for (const url of urls) {
     const slug = safeSlug(url);
@@ -271,6 +272,7 @@ async function main() {
     const hasBaseline = await fileExists(baselinePath);
     if (!hasBaseline) {
       await writeFileAtomic(baselinePath, currentBuf);
+      seededBaselines += 1;
       continue; // seed baseline on first run
     }
 
@@ -301,10 +303,16 @@ async function main() {
   await context.close();
   await browser.close();
 
-  if (!changes.length) return;
+  // Commit baselines if we seeded any, or if we updated baselines due to changes.
+  if (seededBaselines > 0 || changes.length > 0) {
+    const msg =
+      seededBaselines > 0 && changes.length === 0
+        ? `Seed baselines (${seededBaselines})`
+        : `Update baselines (${changes.length} change(s))`;
+    await gitCommitIfNeeded(msg);
+  }
 
-  // Commit baseline updates only when there were changes.
-  await gitCommitIfNeeded(`Update baselines (${changes.length} change(s))`);
+  if (!changes.length) return;
 
   // Email: one email per run (keeps you under 100/day)
   const emailCfg = cfg.email || {};
