@@ -32,7 +32,14 @@ jobs:
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
-
+      - name: Debug files
+        run: |
+          echo "Repo root:"
+          ls -la
+          echo "Scripts:"
+          ls -la scripts || true
+          echo "Config:"
+          cat monitor.config.json || true
       - name: Run monitor
         env:
           MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
