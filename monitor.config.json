@@ -30,7 +30,11 @@
   ],
   "viewport": { "width": 1440, "height": 900 },
   "diff": {
-    "pixelmatchThreshold": 0.10,
+    "pixelmatchThreshold": 0.1,
     "changeThresholdRatio": 0.002
+  },
+  "email": {
+    "attachMaxPngs": 6,
+    "maxAttachmentBytes": 20000000
   }
 }
