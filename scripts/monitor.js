@@ -152,35 +152,15 @@ async function injectStabilisation(page) {
         visibility: hidden !important;
         opacity: 0 !important;
       }
-    `
-  });
 
-  // STEP 4: Cover videos with a solid grey overlay (most reliable method —
-  // stripping sources doesn't work because browsers cache the last frame)
-  await page.evaluate(() => {
-    for (const video of document.querySelectorAll("video")) {
-      video.pause();
-
-      // Find the positioning parent so we can overlay correctly
-      const parent = video.parentElement;
-      if (!parent) continue;
-
-      const parentStyle = getComputedStyle(parent);
-      if (parentStyle.position === "static") {
-        parent.style.position = "relative";
+      /* Hide video elements — the parent .uagb-container__video-wrap already has
+         a static CSS background-image fallback, so hiding the <video> exposes a
+         consistent static image every run. No JS overlay needed. */
+      video {
+        opacity: 0 !important;
+        visibility: hidden !important;
       }
-
-      // Create a grey overlay that sits exactly on top of the video
-      const overlay = document.createElement("div");
-      overlay.style.cssText = `
-        position: absolute;
-        top: 0; left: 0; right: 0; bottom: 0;
-        background: #808080;
-        z-index: 9999;
-        pointer-events: none;
-      `;
-      parent.appendChild(overlay);
-    }
+    `
   });
 }
 
@@ -306,17 +286,6 @@ async function sendMailgunEmail({ subject, text, attachments }) {
   }
 }
 
-async function createZip(inputDir, outZipPath) {
-  const { execFile } = await import("node:child_process");
-  await new Promise((resolve, reject) => {
-    execFile(
-      "bash",
-      ["-lc", `cd "${inputDir.replace(/"/g, '\\"')}" && zip -r "${outZipPath.replace(/"/g, '\\"')}" .`],
-      (err) => (err ? reject(err) : resolve())
-    );
-  });
-}
-
 async function main() {
   const cfg = readJson(CONFIG_PATH);
   const urls = cfg.urls;
@@ -416,20 +385,12 @@ async function main() {
   let attachmentBytes = 0;
 
   const diffFilesAll = (await fsp.readdir(DIFF_DIR)).filter((f) => f.endsWith(".diff.png"));
-  if (diffFilesAll.length) {
-    const zipPath = path.join(TMP_DIR, "diffs.zip");
-    await createZip(DIFF_DIR, zipPath);
-    const zipStat = await fsp.stat(zipPath);
-    attachments.push({ name: "diffs.zip", path: zipPath });
-    attachmentBytes += zipStat.size;
-
-    for (const f of diffFilesAll.slice(0, maxPngs)) {
-      const p = path.join(DIFF_DIR, f);
-      const st = await fsp.stat(p);
-      if (attachmentBytes + st.size > maxBytes) break;
-      attachments.push({ name: f, path: p });
-      attachmentBytes += st.size;
-    }
+  for (const f of diffFilesAll.slice(0, maxPngs)) {
+    const p = path.join(DIFF_DIR, f);
+    const st = await fsp.stat(p);
+    if (attachmentBytes + st.size > maxBytes) break;
+    attachments.push({ name: f, path: p });
+    attachmentBytes += st.size;
   }
 
   const lines = [];
