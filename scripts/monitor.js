@@ -108,14 +108,37 @@ async function acceptCookieYesIfPresent(page) {
 }
 
 async function injectStabilisation(page) {
-  // 1. CSS: disable animations, hide cookie banners, give videos a grey fallback
+  // STEP 1: Scroll the entire page to trigger lazy-loaded images AND entrance animations.
+  // We let everything load and animate BEFORE freezing, so nothing is stuck mid-transition.
+  await page.evaluate(async () => {
+    const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+    const step = window.innerHeight;
+    for (let y = 0; y < document.body.scrollHeight; y += step) {
+      window.scrollTo(0, y);
+      await delay(200);
+    }
+    // Stay at bottom briefly to let final animations trigger
+    await delay(500);
+    // Scroll back to top
+    window.scrollTo(0, 0);
+    await delay(500);
+  });
+
+  // STEP 2: Wait for all animations and image loads to settle
+  await page.waitForTimeout(2000);
+
+  // STEP 3: NOW freeze everything with CSS — animations have already completed
   await page.addStyleTag({
     content: `
       *,
       *::before,
       *::after {
         animation: none !important;
+        animation-delay: 0s !important;
+        animation-duration: 0s !important;
         transition: none !important;
+        transition-delay: 0s !important;
+        transition-duration: 0s !important;
         scroll-behavior: auto !important;
         caret-color: transparent !important;
       }
@@ -129,39 +152,35 @@ async function injectStabilisation(page) {
         visibility: hidden !important;
         opacity: 0 !important;
       }
-
-      /* Video: grey background shows through once we strip the source */
-      video {
-        background: #808080 !important;
-      }
     `
   });
 
-  // 2. JS: neutralise videos so they render as a consistent grey box
+  // STEP 4: Cover videos with a solid grey overlay (most reliable method —
+  // stripping sources doesn't work because browsers cache the last frame)
   await page.evaluate(() => {
     for (const video of document.querySelectorAll("video")) {
       video.pause();
-      video.currentTime = 0;
-      video.removeAttribute("src");
-      video.removeAttribute("poster");
-      video.querySelectorAll("source").forEach((s) => s.remove());
-      video.load(); // re-trigger load with no sources → shows CSS background
-      video.style.objectFit = "none";
-    }
-  });
 
-  // 3. Force all lazy-loaded images to load (scroll to bottom and back)
-  await page.evaluate(async () => {
-    const delay = (ms) => new Promise((r) => setTimeout(r, ms));
-    // Scroll down in chunks to trigger lazy loading
-    const step = window.innerHeight;
-    for (let y = 0; y < document.body.scrollHeight; y += step) {
-      window.scrollTo(0, y);
-      await delay(150);
+      // Find the positioning parent so we can overlay correctly
+      const parent = video.parentElement;
+      if (!parent) continue;
+
+      const parentStyle = getComputedStyle(parent);
+      if (parentStyle.position === "static") {
+        parent.style.position = "relative";
+      }
+
+      // Create a grey overlay that sits exactly on top of the video
+      const overlay = document.createElement("div");
+      overlay.style.cssText = `
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: #808080;
+        z-index: 9999;
+        pointer-events: none;
+      `;
+      parent.appendChild(overlay);
     }
-    // Scroll back to top
-    window.scrollTo(0, 0);
-    await delay(300);
   });
 }
 
@@ -191,10 +210,11 @@ async function captureFullPage(context, url, viewport) {
 
     await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
 
-    // Run stabilisation AFTER page is fully loaded so we catch all videos/lazy images
+    // Stabilisation scrolls the page, lets animations complete, then freezes state
     await injectStabilisation(page);
 
-    await page.waitForTimeout(1500);
+    // Brief final settle after freezing
+    await page.waitForTimeout(500);
 
     const buf = await page.screenshot({ fullPage: true, type: "png" });
     return buf;
