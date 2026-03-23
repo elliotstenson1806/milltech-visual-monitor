@@ -108,6 +108,7 @@ async function acceptCookieYesIfPresent(page) {
 }
 
 async function injectStabilisation(page) {
+  // 1. CSS: disable animations, hide cookie banners, give videos a grey fallback
   await page.addStyleTag({
     content: `
       *,
@@ -129,27 +130,38 @@ async function injectStabilisation(page) {
         opacity: 0 !important;
       }
 
-      /* Hide videos — replaced with grey placeholders via JS below */
+      /* Video: grey background shows through once we strip the source */
       video {
-        visibility: hidden !important;
+        background: #808080 !important;
       }
     `
   });
 
-  // Replace <video> elements with static grey placeholders (CSS pseudo-elements
-  // don't work on replaced elements like <video>, so we do this in JS)
+  // 2. JS: neutralise videos so they render as a consistent grey box
   await page.evaluate(() => {
     for (const video of document.querySelectorAll("video")) {
-      const rect = video.getBoundingClientRect();
-      const placeholder = document.createElement("div");
-      placeholder.style.cssText = `
-        width: ${rect.width}px;
-        height: ${rect.height}px;
-        background: #808080;
-        display: block;
-      `;
-      video.replaceWith(placeholder);
+      video.pause();
+      video.currentTime = 0;
+      video.removeAttribute("src");
+      video.removeAttribute("poster");
+      video.querySelectorAll("source").forEach((s) => s.remove());
+      video.load(); // re-trigger load with no sources → shows CSS background
+      video.style.objectFit = "none";
     }
+  });
+
+  // 3. Force all lazy-loaded images to load (scroll to bottom and back)
+  await page.evaluate(async () => {
+    const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+    // Scroll down in chunks to trigger lazy loading
+    const step = window.innerHeight;
+    for (let y = 0; y < document.body.scrollHeight; y += step) {
+      window.scrollTo(0, y);
+      await delay(150);
+    }
+    // Scroll back to top
+    window.scrollTo(0, 0);
+    await delay(300);
   });
 }
 
@@ -175,10 +187,13 @@ async function captureFullPage(context, url, viewport) {
     });
 
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-    await injectStabilisation(page);
     await acceptCookieYesIfPresent(page);
 
     await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
+
+    // Run stabilisation AFTER page is fully loaded so we catch all videos/lazy images
+    await injectStabilisation(page);
+
     await page.waitForTimeout(1500);
 
     const buf = await page.screenshot({ fullPage: true, type: "png" });
