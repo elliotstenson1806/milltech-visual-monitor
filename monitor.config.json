@@ -31,7 +31,7 @@
   "viewport": { "width": 1440, "height": 900 },
   "diff": {
     "pixelmatchThreshold": 0.1,
-    "changeThresholdRatio": 0.002
+    "changeThresholdRatio": 0.01
   },
   "email": {
     "attachMaxPngs": 6,
