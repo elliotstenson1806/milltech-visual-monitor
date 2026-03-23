@@ -84,7 +84,6 @@ function bytes(n) {
 }
 
 async function acceptCookieYesIfPresent(page) {
-  // CookieYes common selectors (varies by theme/config). We try a few.
   const selectors = [
     ".cky-btn-accept",
     ".cky-btn-accept-all",
@@ -133,29 +132,59 @@ async function injectStabilisation(page) {
   });
 }
 
-async function captureFullPage(page, url, viewport) {
-  await page.setViewportSize(viewport);
+/**
+ * Capture a full-page screenshot using a FRESH page each time.
+ * This avoids stacking route handlers and leftover state between URLs.
+ */
+async function captureFullPage(context, url, viewport) {
+  const page = await context.newPage();
 
-  // Reduce caching artefacts.
-  await page.route("**/*", (route) => {
-    const req = route.request();
-    const headers = {
-      ...req.headers(),
-      "cache-control": "no-cache",
-      pragma: "no-cache"
-    };
-    route.continue({ headers }).catch(() => {});
-  });
+  try {
+    await page.setViewportSize(viewport);
 
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-  await injectStabilisation(page);
+    // Register cache-busting route handler ONCE for this page
+    await page.route("**/*", (route) => {
+      const req = route.request();
+      const headers = {
+        ...req.headers(),
+        "cache-control": "no-cache",
+        pragma: "no-cache"
+      };
+      route.continue({ headers }).catch(() => {});
+    });
 
-  await acceptCookieYesIfPresent(page);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await injectStabilisation(page);
+    await acceptCookieYesIfPresent(page);
 
-  await page.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => {});
-  await page.waitForTimeout(1500);
+    await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
+    await page.waitForTimeout(1500);
 
-  return await page.screenshot({ fullPage: true, type: "png" });
+    const buf = await page.screenshot({ fullPage: true, type: "png" });
+    return buf;
+  } finally {
+    await page.close();
+  }
+}
+
+/**
+ * Capture with retry logic — tries up to maxRetries times with a delay between.
+ */
+async function captureWithRetry(context, url, viewport, maxRetries = 2) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await captureFullPage(context, url, viewport);
+    } catch (e) {
+      lastError = e;
+      console.warn(`[attempt ${attempt}/${maxRetries}] Capture failed for ${url}: ${e.message}`);
+      if (attempt < maxRetries) {
+        // Wait a bit before retrying (escalating delay)
+        await new Promise((r) => setTimeout(r, 3000 * attempt));
+      }
+    }
+  }
+  throw lastError;
 }
 
 function diffPngs(baselineBuf, currentBuf, pixelmatchThreshold) {
@@ -194,14 +223,12 @@ async function sendMailgunEmail({ subject, text, attachments }) {
   const to = mustEnv("ALERT_EMAIL_TO");
   const from = process.env.MAIL_FROM || `Milltech Monitor <postmaster@${domain}>`;
 
-  // Use fetch-native multipart FormData (no form-data library, no getHeaders)
   const form = new FormData();
   form.set("from", from);
   form.set("to", to);
   form.set("subject", subject);
   form.set("text", text);
 
-  // Attach files as Blobs (fetch-native)
   for (const a of attachments) {
     const buf = await fsp.readFile(a.path);
     form.append("attachment", new Blob([buf]), a.name);
@@ -212,7 +239,6 @@ async function sendMailgunEmail({ subject, text, attachments }) {
     method: "POST",
     headers: {
       Authorization: `Basic ${auth}`
-      // DO NOT set Content-Type manually; fetch will add the correct multipart boundary.
     },
     body: form
   });
@@ -251,12 +277,13 @@ async function main() {
   const context = await browser.newContext({
     locale: "en-GB",
     timezoneId: "Europe/London",
-    userAgent: "MilltechVisualMonitor/1.0 (+GitHubActions; Playwright)"
+    // Use a standard Chrome user agent so sites don't block us
+    userAgent:
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
   });
 
-  const page = await context.newPage();
-
   const changes = [];
+  const failures = [];
   let seededBaselines = 0;
 
   for (const url of urls) {
@@ -267,9 +294,10 @@ async function main() {
 
     let currentBuf;
     try {
-      currentBuf = await captureFullPage(page, url, viewport);
+      currentBuf = await captureWithRetry(context, url, viewport);
     } catch (e) {
-      changes.push({ url, note: `CAPTURE FAILED: ${String(e?.message || e)}` });
+      console.error(`CAPTURE FAILED (all retries) for ${url}: ${e.message}`);
+      failures.push({ url, error: String(e?.message || e) });
       continue;
     }
 
@@ -279,7 +307,8 @@ async function main() {
     if (!hasBaseline) {
       await writeFileAtomic(baselinePath, currentBuf);
       seededBaselines += 1;
-      continue; // seed baseline on first run
+      console.log(`Seeded baseline for ${url}`);
+      continue;
     }
 
     const baselineBuf = await fsp.readFile(baselinePath);
@@ -293,19 +322,14 @@ async function main() {
 
     if (changed) {
       await writeFileAtomic(diffPath, diffBuf);
-      changes.push({
-        url,
-        ratio,
-        diffPixels,
-        totalPixels
-      });
-
-      // Update baseline to avoid repeat alerts for the same persistent change.
+      changes.push({ url, ratio, diffPixels, totalPixels });
       await writeFileAtomic(baselinePath, currentBuf);
+      console.log(`Change detected: ${url} (${(ratio * 100).toFixed(3)}%)`);
+    } else {
+      console.log(`No change: ${url}`);
     }
   }
 
-  await page.close();
   await context.close();
   await browser.close();
 
@@ -318,9 +342,15 @@ async function main() {
     await gitCommitIfNeeded(msg);
   }
 
-  if (!changes.length) return;
+  // Only email if there are real visual changes.
+  // Capture failures alone don't trigger email (avoids noisy alerts when site is temporarily down).
+  if (!changes.length) {
+    if (failures.length) {
+      console.warn(`${failures.length} URL(s) failed to capture but no visual changes detected. No email sent.`);
+    }
+    return;
+  }
 
-  // Email: one email per run (keeps you under 100/day)
   const emailCfg = cfg.email || {};
   const maxPngs = emailCfg.attachMaxPngs ?? 6;
   const maxBytes = emailCfg.maxAttachmentBytes ?? 20000000;
@@ -328,7 +358,6 @@ async function main() {
   const attachments = [];
   let attachmentBytes = 0;
 
-  // Always attach all diffs as a zip (if any diffs exist)
   const diffFilesAll = (await fsp.readdir(DIFF_DIR)).filter((f) => f.endsWith(".diff.png"));
   if (diffFilesAll.length) {
     const zipPath = path.join(TMP_DIR, "diffs.zip");
@@ -337,7 +366,6 @@ async function main() {
     attachments.push({ name: "diffs.zip", path: zipPath });
     attachmentBytes += zipStat.size;
 
-    // Attach a few PNGs for quick preview (within size limit)
     for (const f of diffFilesAll.slice(0, maxPngs)) {
       const p = path.join(DIFF_DIR, f);
       const st = await fsp.stat(p);
@@ -350,19 +378,24 @@ async function main() {
   const lines = [];
   lines.push(`Visual change detected (${changes.length} URL(s)).`);
   lines.push("");
+
   for (const c of changes) {
     lines.push(`- ${c.url}`);
-    if (c.note) {
-      lines.push(`  ${c.note}`);
-    } else {
-      lines.push(`  Diff ratio: ${(c.ratio * 100).toFixed(3)}% (${c.diffPixels}/${c.totalPixels})`);
+    lines.push(`  Diff ratio: ${(c.ratio * 100).toFixed(3)}% (${c.diffPixels}/${c.totalPixels})`);
+  }
+
+  // Mention failures in the email body if any, but they didn't trigger the email
+  if (failures.length) {
+    lines.push("");
+    lines.push(`Note: ${failures.length} URL(s) failed to capture (timeout/connection error):`);
+    for (const f of failures) {
+      lines.push(`- ${f.url}`);
     }
   }
+
   lines.push("");
   if (attachments.length) {
     lines.push(`Attachments: ${attachments.map((a) => a.name).join(", ")} (total ${bytes(attachmentBytes)})`);
-  } else {
-    lines.push("No diff images were generated (capture failures only).");
   }
 
   await sendMailgunEmail({
@@ -370,6 +403,8 @@ async function main() {
     text: lines.join("\n"),
     attachments
   });
+
+  console.log(`Email sent: ${changes.length} change(s), ${failures.length} failure(s).`);
 }
 
 main().catch((err) => {
