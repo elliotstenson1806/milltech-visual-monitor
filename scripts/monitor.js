@@ -128,7 +128,28 @@ async function injectStabilisation(page) {
         visibility: hidden !important;
         opacity: 0 !important;
       }
+
+      /* Hide videos — replaced with grey placeholders via JS below */
+      video {
+        visibility: hidden !important;
+      }
     `
+  });
+
+  // Replace <video> elements with static grey placeholders (CSS pseudo-elements
+  // don't work on replaced elements like <video>, so we do this in JS)
+  await page.evaluate(() => {
+    for (const video of document.querySelectorAll("video")) {
+      const rect = video.getBoundingClientRect();
+      const placeholder = document.createElement("div");
+      placeholder.style.cssText = `
+        width: ${rect.width}px;
+        height: ${rect.height}px;
+        background: #808080;
+        display: block;
+      `;
+      video.replaceWith(placeholder);
+    }
   });
 }
 
@@ -207,7 +228,8 @@ function diffPngs(baselineBuf, currentBuf, pixelmatchThreshold) {
   const diff = new PNG({ width, height });
   const diffPixels = pixelmatch(a.data, b.data, diff.data, width, height, {
     threshold: pixelmatchThreshold,
-    includeAA: false
+    includeAA: false,
+    alpha: 0.1
   });
 
   const totalPixels = width * height;
