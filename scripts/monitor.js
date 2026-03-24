@@ -83,6 +83,51 @@ function bytes(n) {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function getLondonHour(date = new Date()) {
+  const hour = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    hour: "numeric",
+    hourCycle: "h23"
+  }).format(date);
+  return Number(hour);
+}
+
+function normaliseUrl(value) {
+  return new URL(value).toString();
+}
+
+function resolveUrlsToCheck(cfg) {
+  const allUrls = Array.isArray(cfg.urls) ? cfg.urls.map(normaliseUrl) : [];
+  const alwaysSet = new Set((cfg.alwaysCheckUrls || []).map(normaliseUrl));
+  const dailyHour = Number.isInteger(cfg.dailyCheckHourLondon) ? cfg.dailyCheckHourLondon : 2;
+  const isDailySweepHour = getLondonHour() === dailyHour;
+
+  const urls = isDailySweepHour ? allUrls : allUrls.filter((url) => alwaysSet.has(url));
+
+  return {
+    urls,
+    isDailySweepHour,
+    dailyHour,
+    alwaysCount: alwaysSet.size,
+    totalCount: allUrls.length
+  };
+}
+
+function shouldBlockRequest(req, requestFiltering = {}) {
+  const resourceType = req.resourceType();
+  const url = req.url().toLowerCase();
+  const blockResourceTypes = new Set(requestFiltering.blockResourceTypes || []);
+  const blockUrlPatterns = (requestFiltering.blockUrlPatterns || []).map((value) =>
+    String(value).toLowerCase()
+  );
+
+  if (blockResourceTypes.has(resourceType)) {
+    return true;
+  }
+
+  return blockUrlPatterns.some((pattern) => url.includes(pattern));
+}
+
 async function acceptCookieYesIfPresent(page) {
   const selectors = [
     ".cky-btn-accept",
@@ -108,8 +153,6 @@ async function acceptCookieYesIfPresent(page) {
 }
 
 async function injectStabilisation(page) {
-  // STEP 1: Scroll the entire page to trigger lazy-loaded images AND entrance animations.
-  // We let everything load and animate BEFORE freezing, so nothing is stuck mid-transition.
   await page.evaluate(async () => {
     const delay = (ms) => new Promise((r) => setTimeout(r, ms));
     const step = window.innerHeight;
@@ -117,17 +160,13 @@ async function injectStabilisation(page) {
       window.scrollTo(0, y);
       await delay(200);
     }
-    // Stay at bottom briefly to let final animations trigger
     await delay(500);
-    // Scroll back to top
     window.scrollTo(0, 0);
     await delay(500);
   });
 
-  // STEP 2: Wait for all animations and image loads to settle
   await page.waitForTimeout(2000);
 
-  // STEP 3: NOW freeze everything with CSS — animations have already completed
   await page.addStyleTag({
     content: `
       *,
@@ -143,7 +182,6 @@ async function injectStabilisation(page) {
         caret-color: transparent !important;
       }
 
-      /* Hide CookieYes / overlays / revisit buttons */
       .cky-consent-container,
       .cky-overlay,
       .cky-consent-bar,
@@ -153,9 +191,6 @@ async function injectStabilisation(page) {
         opacity: 0 !important;
       }
 
-      /* Hide video elements — the parent .uagb-container__video-wrap already has
-         a static CSS background-image fallback, so hiding the <video> exposes a
-         consistent static image every run. No JS overlay needed. */
       video {
         opacity: 0 !important;
         visibility: hidden !important;
@@ -164,58 +199,56 @@ async function injectStabilisation(page) {
   });
 }
 
-/**
- * Capture a full-page screenshot using a FRESH page each time.
- * This avoids stacking route handlers and leftover state between URLs.
- */
-async function captureFullPage(context, url, viewport) {
+async function captureFullPage(context, url, viewport, requestFiltering) {
   const page = await context.newPage();
 
   try {
     await page.setViewportSize(viewport);
 
-    // Register cache-busting route handler ONCE for this page
     await page.route("**/*", (route) => {
       const req = route.request();
-      const headers = {
-        ...req.headers(),
-        "cache-control": "no-cache",
-        pragma: "no-cache"
-      };
-      route.continue({ headers }).catch(() => {});
+
+      if (shouldBlockRequest(req, requestFiltering)) {
+        route.abort().catch(() => {});
+        return;
+      }
+
+      if (req.resourceType() === "document") {
+        const headers = {
+          ...req.headers(),
+          "cache-control": "no-cache",
+          pragma: "no-cache"
+        };
+        route.continue({ headers }).catch(() => {});
+        return;
+      }
+
+      route.continue().catch(() => {});
     });
 
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     await acceptCookieYesIfPresent(page);
 
-    await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
+    await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
 
-    // Stabilisation scrolls the page, lets animations complete, then freezes state
     await injectStabilisation(page);
-
-    // Brief final settle after freezing
     await page.waitForTimeout(500);
 
-    const buf = await page.screenshot({ fullPage: true, type: "png" });
-    return buf;
+    return await page.screenshot({ fullPage: true, type: "png" });
   } finally {
     await page.close();
   }
 }
 
-/**
- * Capture with retry logic — tries up to maxRetries times with a delay between.
- */
-async function captureWithRetry(context, url, viewport, maxRetries = 2) {
+async function captureWithRetry(context, url, viewport, requestFiltering, maxRetries = 2) {
   let lastError;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      return await captureFullPage(context, url, viewport);
+      return await captureFullPage(context, url, viewport, requestFiltering);
     } catch (e) {
       lastError = e;
       console.warn(`[attempt ${attempt}/${maxRetries}] Capture failed for ${url}: ${e.message}`);
       if (attempt < maxRetries) {
-        // Wait a bit before retrying (escalating delay)
         await new Promise((r) => setTimeout(r, 3000 * attempt));
       }
     }
@@ -288,10 +321,21 @@ async function sendMailgunEmail({ subject, text, attachments }) {
 
 async function main() {
   const cfg = readJson(CONFIG_PATH);
-  const urls = cfg.urls;
+  const { urls, isDailySweepHour, dailyHour, alwaysCount, totalCount } = resolveUrlsToCheck(cfg);
   const viewport = cfg.viewport;
   const pixelmatchThreshold = cfg.diff.pixelmatchThreshold;
   const changeThresholdRatio = cfg.diff.changeThresholdRatio;
+  const requestFiltering = cfg.requestFiltering || {};
+
+  if (!urls.length) {
+    throw new Error("No URLs selected for this run. Check monitor.config.json.");
+  }
+
+  console.log(
+    isDailySweepHour
+      ? `Daily sweep hour in Europe/London (${dailyHour}:00). Checking all ${totalCount} URLs.`
+      : `Hourly run outside daily sweep. Checking ${urls.length} priority URLs out of ${totalCount}.`
+  );
 
   await ensureDirs();
 
@@ -303,7 +347,6 @@ async function main() {
   const context = await browser.newContext({
     locale: "en-GB",
     timezoneId: "Europe/London",
-    // Use a standard Chrome user agent so sites don't block us
     userAgent:
       "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
   });
@@ -320,7 +363,7 @@ async function main() {
 
     let currentBuf;
     try {
-      currentBuf = await captureWithRetry(context, url, viewport);
+      currentBuf = await captureWithRetry(context, url, viewport, requestFiltering);
     } catch (e) {
       console.error(`CAPTURE FAILED (all retries) for ${url}: ${e.message}`);
       failures.push({ url, error: String(e?.message || e) });
@@ -359,7 +402,6 @@ async function main() {
   await context.close();
   await browser.close();
 
-  // Commit baselines if we seeded any, or if we updated baselines due to changes.
   if (seededBaselines > 0 || changes.length > 0) {
     const msg =
       seededBaselines > 0 && changes.length === 0
@@ -368,8 +410,6 @@ async function main() {
     await gitCommitIfNeeded(msg);
   }
 
-  // Only email if there are real visual changes.
-  // Capture failures alone don't trigger email (avoids noisy alerts when site is temporarily down).
   if (!changes.length) {
     if (failures.length) {
       console.warn(`${failures.length} URL(s) failed to capture but no visual changes detected. No email sent.`);
@@ -396,13 +436,18 @@ async function main() {
   const lines = [];
   lines.push(`Visual change detected (${changes.length} URL(s)).`);
   lines.push("");
+  lines.push(
+    isDailySweepHour
+      ? `Run type: daily full sweep (${totalCount} configured URL(s), ${alwaysCount} priority URL(s)).`
+      : `Run type: hourly priority sweep (${urls.length} priority URL(s), ${totalCount - urls.length} deferred until ${dailyHour}:00 Europe/London).`
+  );
+  lines.push("");
 
   for (const c of changes) {
     lines.push(`- ${c.url}`);
     lines.push(`  Diff ratio: ${(c.ratio * 100).toFixed(3)}% (${c.diffPixels}/${c.totalPixels})`);
   }
 
-  // Mention failures in the email body if any, but they didn't trigger the email
   if (failures.length) {
     lines.push("");
     lines.push(`Note: ${failures.length} URL(s) failed to capture (timeout/connection error):`);
