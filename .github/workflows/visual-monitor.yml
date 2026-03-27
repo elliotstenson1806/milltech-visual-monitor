@@ -16,29 +16,50 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
+      - name: Check UK schedule window
+        id: uk_hours
+        run: |
+          HOUR=$(TZ=Europe/London date +%H)
+          if [ "$HOUR" -ge 5 ] && [ "$HOUR" -lt 20 ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip outside UK monitoring hours
+        if: github.event_name == 'schedule' && steps.uk_hours.outputs.should_run != 'true'
+        run: |
+          echo "Skipping scheduled run outside UK monitoring hours (05:00-19:59 Europe/London)."
+
       - name: Checkout
+        if: github.event_name == 'workflow_dispatch' || steps.uk_hours.outputs.should_run == 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          
+
       - name: Configure git
+        if: github.event_name == 'workflow_dispatch' || steps.uk_hours.outputs.should_run == 'true'
         run: |
           git config user.name "milltech-visual-monitor[bot]"
           git config user.email "milltech-visual-monitor[bot]@users.noreply.github.com"
 
       - name: Setup Node
+        if: github.event_name == 'workflow_dispatch' || steps.uk_hours.outputs.should_run == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: "npm"
 
       - name: Install deps
+        if: github.event_name == 'workflow_dispatch' || steps.uk_hours.outputs.should_run == 'true'
         run: npm ci
 
       - name: Install Playwright browsers
+        if: github.event_name == 'workflow_dispatch' || steps.uk_hours.outputs.should_run == 'true'
         run: npx playwright install --with-deps chromium
 
       - name: Run monitor
+        if: github.event_name == 'workflow_dispatch' || steps.uk_hours.outputs.should_run == 'true'
         env:
           MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
           MAILGUN_DOMAIN: ${{ secrets.MAILGUN_DOMAIN }}
@@ -48,7 +69,7 @@ jobs:
         run: npm run monitor
 
       - name: Upload artefacts
-        if: always()
+        if: always() && (github.event_name == 'workflow_dispatch' || steps.uk_hours.outputs.should_run == 'true')
         uses: actions/upload-artifact@v4
         with:
           name: visual-monitor-output
