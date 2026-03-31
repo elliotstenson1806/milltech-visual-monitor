@@ -20,7 +20,7 @@ jobs:
         id: uk_hours
         run: |
           HOUR=$(TZ=Europe/London date +%H)
-          if [ "$HOUR" -ge 5 ] && [ "$HOUR" -lt 20 ]; then
+          if [ "$HOUR" -ge 6 ] && [ "$HOUR" -lt 18 ]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           else
             echo "should_run=false" >> "$GITHUB_OUTPUT"
